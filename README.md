@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="Licencia MIT"></a>
 </p>
 
-TIM3R está pensada para esos momentos en los que solo necesitas configurar el WOD, apoyar el teléfono y entrenar. Funciona completamente en el dispositivo, mantiene la pantalla activa durante la sesión y utiliza el reloj monotónico de Android para evitar desfasajes aunque la interfaz se recomponga o la aplicación pase momentáneamente a segundo plano.
+TIM3R está pensada para configurar un timer rápido o seguir una planificación completa sección por sección. Permite crear WODs, guardar favoritos, importar rutinas semanales desde PDFs digitales, registrar el historial y construir estadísticas locales. Funciona completamente en el dispositivo y utiliza el reloj monotónico de Android para evitar desfasajes durante el entrenamiento.
 
 ## Capturas
 
@@ -48,12 +48,29 @@ Define la duración de cada intervalo y la cantidad de rondas. Una nueva ronda c
 
 Alterna periodos configurables de trabajo y descanso. El preset inicial utiliza el formato clásico de `8 × 20 s / 10 s`.
 
-### Mix
+### WODs compuestos y Mix
 
-Construye una sesión de hasta ocho bloques combinando AMRAP, For Time, EMOM y Tabata, con duración y transición configurables para cada bloque.
+Construye una rutina completa con secciones independientes de movilidad, warm-up, fuerza, técnica, AMRAP, For Time, EMOM, Tabata, descanso o notas. Cada sección conserva sus ejercicios, duración, rondas, descansos y time cap, y puede seguirse paso a paso durante la sesión.
+
+## Importar la rutina de un coach
+
+Desde **Mis WODs → Importar PDF**, selecciona un PDF digital generado por Google Sheets, Excel u otra herramienta. TIM3R:
+
+1. Divide la primera página en columnas de lunes a viernes.
+2. Detecta secciones `A)`, `B)`, `C)` y `D)`.
+3. Clasifica movilidad, warm-up, fuerza, skills y conditioning.
+4. Reconoce AMRAP, EMOM/OTM, For Time y time caps comunes.
+5. Crea un WOD editable por cada día.
+
+La importación siempre se guarda como borrador revisable porque las planificaciones suelen contener abreviaturas, alternativas RX/Scaled y formatos particulares del coach. Los PDFs escaneados como imagen todavía requieren OCR y no se importan automáticamente.
 
 ## Características
 
+- Biblioteca local de WODs, presets y favoritos.
+- Constructor de WODs con secciones tipadas.
+- Importación offline de rutinas semanales en PDF.
+- Runner paso a paso con ejercicio actual y próxima sección.
+- Historial persistente y dashboard de sesiones, minutos, racha y tipos.
 - Cuenta regresiva de preparación de 10 segundos.
 - Pausa y reanudación sin perder precisión.
 - Señales sonoras y vibración en momentos clave.
@@ -71,10 +88,16 @@ La aplicación separa la interfaz del motor temporal:
 app/src/main/java/com/felipe/tim3r/
 ├── MainActivity.kt          # Interfaz con Jetpack Compose
 ├── MainViewModel.kt         # Estado, configuración y ciclo de la sesión
+├── data/
+│   ├── WorkoutModels.kt     # WODs, secciones, resultados y dashboard
+│   └── WorkoutStore.kt      # Persistencia local en JSON
+├── importer/
+│   └── RoutinePdfImporter.kt # Extracción y clasificación offline del PDF
 ├── domain/
 │   └── TimerEngine.kt       # Máquina de estados y cálculos temporales
-└── ui/theme/
-    └── Theme.kt             # Colores y tema visual
+└── ui/
+    ├── theme/Theme.kt       # Colores y tema visual
+    └── workouts/WorkoutScreens.kt # Biblioteca, editor, runner e historial
 ```
 
 `TimerEngine` es Kotlin puro y recibe explícitamente el tiempo monotónico. Los ticks solo actualizan la representación visual: nunca incrementan un contador mutable. De esta forma, un frame perdido o una recomposición no introducen deriva en el cronómetro.
@@ -87,6 +110,8 @@ app/src/main/java/com/felipe/tim3r/
 - Android ViewModel y StateFlow
 - Coroutines
 - Gradle Kotlin DSL
+- PDFBox para Android
+- JSON local mediante SharedPreferences
 - JUnit 4
 
 ## Requisitos
@@ -139,8 +164,8 @@ Cada push a `main` también ejecuta estas verificaciones mediante GitHub Actions
 
 ## Roadmap
 
-- Historial de entrenamientos y resultados.
-- Presets y WODs favoritos.
+- Persistencia relacional con Room y migración desde el almacenamiento JSON.
+- OCR local para planificaciones escaneadas.
 - Registro de rondas y repeticiones durante AMRAP.
 - Ejecución mediante foreground service.
 - Avisos de voz configurables.

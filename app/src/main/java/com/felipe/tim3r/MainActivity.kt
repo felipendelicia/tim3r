@@ -7,7 +7,7 @@ import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.view.WindowManager
+
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -42,6 +42,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -51,9 +52,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -72,6 +79,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import com.felipe.tim3r.data.AppSettings
 import com.felipe.tim3r.domain.IntervalPhase
 import com.felipe.tim3r.domain.MixBlock
 import com.felipe.tim3r.domain.SessionStatus
@@ -88,7 +96,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         setContent {
             Tim3rTheme {
                 Tim3rApp()
@@ -100,7 +108,34 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun Tim3rApp(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    BackHandler(enabled = state.screen != AppScreen.HOME) { viewModel.back() }
+    val view = LocalView.current
+    val isActiveTraining = (state.screen == AppScreen.TIMER && state.snapshot?.status != SessionStatus.FINISHED) ||
+        (state.screen == AppScreen.WOD_RUNNER && state.runner?.completed == false)
+    val keepScreenOn = isActiveTraining && state.settings.keepScreenOn
+    var confirmExit by remember { mutableStateOf(false) }
+
+    DisposableEffect(keepScreenOn) {
+        view.keepScreenOn = keepScreenOn
+        onDispose { view.keepScreenOn = false }
+    }
+    BackHandler(enabled = state.screen != AppScreen.HOME) {
+        if (isActiveTraining) confirmExit = true else viewModel.back()
+    }
+
+    if (confirmExit) {
+        AlertDialog(
+            onDismissRequest = { confirmExit = false },
+            title = { Text("¿Salir del entrenamiento?") },
+            text = { Text("El progreso parcial del WOD se guardará si ya completaste una sección.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmExit = false
+                    if (state.screen == AppScreen.WOD_RUNNER) viewModel.abortWod() else viewModel.exitTimer()
+                }) { Text("SALIR", color = Color(0xFFFF746C)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmExit = false }) { Text("SEGUIR ENTRENANDO") } },
+        )
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         AnimatedContent(
@@ -109,7 +144,13 @@ private fun Tim3rApp(viewModel: MainViewModel = viewModel()) {
             label = "screen",
         ) { screen ->
             when (screen) {
-                AppScreen.HOME -> HomeScreen(onSelect = viewModel::chooseMode)
+                AppScreen.HOME -> HomeScreen(
+                    state = state,
+                    onSelect = viewModel::chooseMode,
+                    onWorkouts = viewModel::showWorkouts,
+                    onProgress = viewModel::showProgress,
+                    onSettings = viewModel::showSettings,
+                )
                 AppScreen.CONFIG -> ConfigScreen(
                     state = state,
                     onBack = viewModel::back,
@@ -130,15 +171,30 @@ private fun Tim3rApp(viewModel: MainViewModel = viewModel()) {
                         onComplete = viewModel::completeForTime,
                         onRestart = viewModel::restart,
                         onExit = viewModel::exitTimer,
+                        settings = state.settings,
+                        controlsLocked = state.controlsLocked,
+                        onToggleLock = viewModel::toggleControlsLock,
                     )
                 }
+                AppScreen.WORKOUTS -> WorkoutLibraryScreen(state, viewModel)
+                AppScreen.WORKOUT_DETAIL -> WorkoutDetailScreen(state, viewModel)
+                AppScreen.WORKOUT_EDITOR -> WorkoutEditorScreen(state, viewModel)
+                AppScreen.WOD_RUNNER -> WodRunnerScreen(state, viewModel)
+                AppScreen.PROGRESS -> ProgressScreen(state, viewModel)
+                AppScreen.SETTINGS -> SettingsScreen(state, viewModel)
             }
         }
     }
 }
 
 @Composable
-private fun HomeScreen(onSelect: (WorkoutMode) -> Unit) {
+private fun HomeScreen(
+    state: Tim3rUiState,
+    onSelect: (WorkoutMode) -> Unit,
+    onWorkouts: () -> Unit,
+    onProgress: () -> Unit,
+    onSettings: () -> Unit,
+) {
     val modes = listOf(
         ModeInfo(WorkoutMode.AMRAP, "A", "AMRAP", "Tantas rondas como puedas", TimerOrange),
         ModeInfo(WorkoutMode.FOR_TIME, "FT", "FOR TIME", "Completa el trabajo contra reloj", TimerGreen),
@@ -161,16 +217,63 @@ private fun HomeScreen(onSelect: (WorkoutMode) -> Unit) {
                 Surface(shape = RoundedCornerShape(50), color = TimerSurfaceHigh) {
                     Text("READY TO TRAIN", modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = TimerGreen)
                 }
+                Spacer(Modifier.width(8.dp))
+                Surface(modifier = Modifier.size(38.dp).clickable(onClick = onSettings), shape = CircleShape, color = TimerSurfaceHigh) {
+                    Box(contentAlignment = Alignment.Center) { Text("⚙", color = TimerMuted, fontSize = 18.sp) }
+                }
             }
             Spacer(Modifier.height(34.dp))
             Text("¿QUÉ VAS A", color = TimerMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
             Text("ENTRENAR HOY?", fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Black)
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                HomeShortcut(
+                    title = "MIS WODS",
+                    value = state.workouts.size.toString(),
+                    subtitle = "Planes y favoritos",
+                    color = Color(0xFFC7A4FF),
+                    modifier = Modifier.weight(1f),
+                    onClick = onWorkouts,
+                )
+                HomeShortcut(
+                    title = "PROGRESO",
+                    value = state.dashboard.completedSessions.toString(),
+                    subtitle = "Sesiones guardadas",
+                    color = TimerGreen,
+                    modifier = Modifier.weight(1f),
+                    onClick = onProgress,
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+            Text("TEMPORIZADORES RÁPIDOS", color = TimerMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Spacer(Modifier.height(2.dp))
         }
         itemsIndexed(modes) { _, info -> ModeCard(info = info, onClick = { onSelect(info.mode) }) }
         item {
             Spacer(Modifier.height(16.dp))
             Text("Sin distracciones. Solo tú contra el reloj.", modifier = Modifier.fillMaxWidth(), color = TimerMuted, textAlign = TextAlign.Center, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun HomeShortcut(
+    title: String,
+    value: String,
+    subtitle: String,
+    color: Color,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(Modifier.padding(15.dp)) {
+            Text(value, color = color, fontSize = 27.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+            Text(title, fontSize = 12.sp, fontWeight = FontWeight.Black)
+            Text(subtitle, color = TimerMuted, fontSize = 10.sp, maxLines = 1)
         }
     }
 }
@@ -409,8 +512,11 @@ private fun TimerScreen(
     onComplete: () -> Unit,
     onRestart: () -> Unit,
     onExit: () -> Unit,
+    settings: AppSettings,
+    controlsLocked: Boolean,
+    onToggleLock: () -> Unit,
 ) {
-    TimerCue(snapshot)
+    TimerCue(snapshot, mode, settings)
     val accent = phaseColor(snapshot, mode)
     val animatedProgress by animateFloatAsState(
         targetValue = if (snapshot.progress > 0f) snapshot.progress else (snapshot.elapsedSeconds % 60) / 60f,
@@ -449,23 +555,33 @@ private fun TimerScreen(
 
         AnimatedVisibility(snapshot.status != SessionStatus.FINISHED) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (snapshot.canComplete) {
+                if (controlsLocked) {
                     Button(
-                        onClick = onComplete,
+                        onClick = onToggleLock,
                         modifier = Modifier.fillMaxWidth().height(60.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = TimerGreen, contentColor = Color.Black),
+                        colors = ButtonDefaults.buttonColors(containerColor = TimerSurfaceHigh),
                         shape = RoundedCornerShape(18.dp),
-                    ) { Text("TERMINÉ", fontSize = 16.sp, fontWeight = FontWeight.Black) }
+                    ) { Text("🔒  DESBLOQUEAR CONTROLES", fontWeight = FontWeight.Black) }
+                    Text("CONTROLES BLOQUEADOS", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = TimerGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                } else {
+                    if (snapshot.canComplete) {
+                        Button(
+                            onClick = onComplete,
+                            modifier = Modifier.fillMaxWidth().height(60.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = TimerGreen, contentColor = Color.Black),
+                            shape = RoundedCornerShape(18.dp),
+                        ) { Text("TERMINÉ", fontSize = 16.sp, fontWeight = FontWeight.Black) }
+                    }
+                    Button(
+                        onClick = onPause,
+                        modifier = Modifier.fillMaxWidth().height(60.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (snapshot.status == SessionStatus.PAUSED) accent else TimerSurfaceHigh),
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        Text(if (snapshot.status == SessionStatus.PAUSED) "REANUDAR" else "PAUSAR", color = if (snapshot.status == SessionStatus.PAUSED) Color.Black else Color.White, fontWeight = FontWeight.Black)
+                    }
+                    Text("BLOQUEAR CONTROLES", modifier = Modifier.fillMaxWidth().clickable(onClick = onToggleLock).padding(7.dp), textAlign = TextAlign.Center, color = TimerMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
                 }
-                Button(
-                    onClick = onPause,
-                    modifier = Modifier.fillMaxWidth().height(60.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = if (snapshot.status == SessionStatus.PAUSED) accent else TimerSurfaceHigh),
-                    shape = RoundedCornerShape(18.dp),
-                ) {
-                    Text(if (snapshot.status == SessionStatus.PAUSED) "REANUDAR" else "PAUSAR", color = if (snapshot.status == SessionStatus.PAUSED) Color.Black else Color.White, fontWeight = FontWeight.Black)
-                }
-                Text("MANTÉN EL RITMO", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = TimerMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
             }
         }
 
@@ -516,27 +632,37 @@ private fun StatPill(label: String, value: String) {
 }
 
 @Composable
-private fun TimerCue(snapshot: TimerSnapshot) {
+private fun TimerCue(snapshot: TimerSnapshot, mode: WorkoutMode, settings: AppSettings) {
     val context = LocalContext.current
-    LaunchedEffect(snapshot.status, snapshot.phase, snapshot.currentRound, snapshot.currentBlock, snapshot.displaySeconds) {
+    LaunchedEffect(snapshot.status, snapshot.phase, snapshot.currentRound, snapshot.currentBlock, snapshot.displaySeconds, settings) {
         val countdownCue = snapshot.phase == IntervalPhase.PREPARE && snapshot.displaySeconds in 1..3
-        val boundaryCue = snapshot.status == SessionStatus.RUNNING && snapshot.displaySeconds == 1
+        val boundaryCue = snapshot.status == SessionStatus.RUNNING && snapshot.displaySeconds == 1 &&
+            (mode != WorkoutMode.FOR_TIME || snapshot.phase == IntervalPhase.REST)
         val finishCue = snapshot.status == SessionStatus.FINISHED
         if (!countdownCue && !boundaryCue && !finishCue) return@LaunchedEffect
 
-        val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90)
-        tone.startTone(
-            if (finishCue) ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD else ToneGenerator.TONE_PROP_BEEP,
-            if (finishCue) 700 else 120,
-        )
-        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            context.getSystemService(VibratorManager::class.java)?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION") context.getSystemService(Vibrator::class.java)
+        var tone: ToneGenerator? = null
+        try {
+            if (settings.soundEnabled) {
+                tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
+                    it.startTone(
+                        if (finishCue) ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD else ToneGenerator.TONE_PROP_BEEP,
+                        if (finishCue) 700 else 120,
+                    )
+                }
+            }
+            if (settings.vibrationEnabled) {
+                val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION") context.getSystemService(Vibrator::class.java)
+                }
+                vibrator?.vibrate(VibrationEffect.createOneShot(if (finishCue) 400 else 80, VibrationEffect.DEFAULT_AMPLITUDE))
+            }
+            delay(if (finishCue) 750 else 150)
+        } finally {
+            tone?.release()
         }
-        vibrator?.vibrate(VibrationEffect.createOneShot(if (finishCue) 400 else 80, VibrationEffect.DEFAULT_AMPLITUDE))
-        delay(if (finishCue) 750 else 150)
-        tone.release()
     }
 }
 
